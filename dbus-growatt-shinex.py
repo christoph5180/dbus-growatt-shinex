@@ -125,11 +125,11 @@ class DbusGrowattShineXService:
 
     for attempt in range(max_retries):
         try:
-            meter_r = requests.get(url=URL, timeout=10, headers=headers)
-            if meter_r.status_code == 200:
-                if meter_r.headers.get('Content-Type').startswith('text/html'):
-                    REBOOT_URL = URL.replace('/status', '/restart')
-                    requests.get(url=REBOOT_URL, timeout=10)
+      meter_r = requests.get(url=URL, timeout=10, headers=headers)
+      if meter_r.status_code == 200:
+        if meter_r.headers.get('Content-Type').startswith('text/html'):
+          REBOOT_URL = URL.replace('/status', '/restart')
+          requests.get(url=REBOOT_URL, timeout=10)
                     logging.info("Wechselrichter neugestartet – warte 30 Sekunden...")
                     time.sleep(30)
                     continue  # Versuche erneut
@@ -145,9 +145,8 @@ class DbusGrowattShineXService:
         time.sleep(retry_delay)
 
     # Nach 3 Fehlversuchen: Skript neu starten
-    logging.critical("3 fehlgeschlagene Versuche – starte Skript neu...")
-    self._restart_script()
-    return False  # Falls _restart_script() nicht funktioniert (Fallback)
+    logging.critical("3 fehlgeschlagene Versuche – melde Wechselrichter als offline")
+    return None
 
   def _signOfLife(self):
     logging.info("--- Start: sign of life ---")
@@ -166,7 +165,6 @@ class DbusGrowattShineXService:
       config = self._getConfig()
       LocalPhase = config['DEFAULT']['Phase']
       allPhase = ['L1','L2','L3']
-      nuPhase = list(set(allPhase) - set(LocalPhase))
       #get data from Shine X
       cosphi = 1
 
@@ -175,9 +173,18 @@ class DbusGrowattShineXService:
       if meter_data is False:
         logging.info("Did not got valid Json.")
         return True
+      if meter_data is None:
+        logging.info("Wechselrichter offline – setze Werte auf 0")
+        self._dbusservice['/Connected'] = 0
+        self._dbusservice['/Ac/Power'] = 0
+        for Phase in allPhase:
+          self._dbusservice[f'/Ac/{Phase}/Current'] = 0
+          self._dbusservice[f'/Ac/{Phase}/Power'] = 0
+          self._dbusservice[f'/Ac/{Phase}/Voltage'] = 0
+        return True
 
-      self._dbusservice['/Connected'] = meter_data['InverterStatus']
-      if meter_data['InverterStatus'] == 0:
+      self._dbusservice['/Connected'] = meter_data.get('InverterStatus', 0)
+      if meter_data.get('InverterStatus', 0) == 0:
         PhaseList = ['L1','L2','L3']
         for Phase in PhaseList:
           dbCur = '/Ac/{}/Current'.format(Phase)
@@ -195,32 +202,44 @@ class DbusGrowattShineXService:
         return True
 
 
-      if meter_data['PV1InputPower'] == 0 and meter_data['PV1InputPower'] == 0 and meter_data['PV2InputPower'] == 0 and meter_data['PV2InputPower'] == 0:
-        self._dbusservice['/Ac/Energy/Forward'] = meter_data['TotalGenerateEnergy']
+      if meter_data.get('PV1InputPower', 0) == 0 and meter_data.get('PV2InputPower', 0) == 0:
+        self._dbusservice['/Ac/Energy/Forward'] = meter_data.get('TotalGenerateEnergy', 0)
         self._dbusservice['/Ac/Power'] = 0
+        for Phase in allPhase:
+          self._dbusservice[f'/Ac/{Phase}/Current'] = 0
+          self._dbusservice[f'/Ac/{Phase}/Power'] = 0
+          self._dbusservice[f'/Ac/{Phase}/Voltage'] = meter_data.get(f'{Phase}ThreePhaseGridVoltage', 0)
         return True
 
-      if meter_data['L3ThreePhaseGridOutputPower'] > 0:
+      l1p = meter_data.get('L1ThreePhaseGridOutputPower', 0)
+      l2p = meter_data.get('L2ThreePhaseGridOutputPower', 0)
+      l3p = meter_data.get('L3ThreePhaseGridOutputPower', 0)
+
+      if l3p > 0 or l2p > 0:
         PhaseList = allPhase
         for Phase in PhaseList:
           dbsname = '/Ac/{}/Energy/Forward'.format(Phase)
-          self._dbusservice[dbsname] = ( meter_data['TotalGenerateEnergy'] / 3 )
-        if meter_data['L1ThreePhaseGridOutputCurrent'] <= 0.5 and meter_data['L2ThreePhaseGridOutputCurrent'] <= 0.5 and meter_data['L2ThreePhaseGridOutputCurrent'] <= 0.5:
+          self._dbusservice[dbsname] = ( meter_data.get('TotalGenerateEnergy', 0) / 3 )
+        if meter_data.get('L1ThreePhaseGridOutputCurrent', 0) <= 0.5 and meter_data.get('L2ThreePhaseGridOutputCurrent', 0) <= 0.5 and meter_data.get('L2ThreePhaseGridOutputCurrent', 0) <= 0.5:
           meter_data['OutputPower'] = 0
       else:
         PhaseList = [LocalPhase]
         ef = '/Ac/{}/Energy/Forward'.format(LocalPhase)
-        self._dbusservice[ef] = meter_data['TotalGenerateEnergy']
-        if meter_data['L1ThreePhaseGridOutputCurrent'] <= 0.5:
+        self._dbusservice[ef] = meter_data.get('TotalGenerateEnergy', 0)
+        if meter_data.get('L1ThreePhaseGridOutputCurrent', 0) <= 0.5:
             meter_data['OutputPower'] = 0
 
-      LAll = meter_data['L1ThreePhaseGridOutputPower'] + meter_data['L2ThreePhaseGridOutputPower'] + meter_data['L3ThreePhaseGridOutputPower']
-      Pct1 = 100 / LAll
-      Pct2 = Pct1 * meter_data['OutputPower']
-      cosphi = Pct2 / 100
-      if meter_data['OutputPower'] > 0:
-        self._dbusservice['/Ac/Energy/Forward'] = meter_data['TotalGenerateEnergy']
-        self._dbusservice['/Ac/Power'] = meter_data['OutputPower']
+      LAll = l1p + l2p + l3p
+      if LAll > 0:
+        Pct1 = 100 / LAll
+        Pct2 = Pct1 * meter_data.get('OutputPower', 0)
+        cosphi = Pct2 / 100
+      else:
+        cosphi = 1
+
+      if meter_data.get('OutputPower', 0) > 0:
+        self._dbusservice['/Ac/Energy/Forward'] = meter_data.get('TotalGenerateEnergy', 0)
+        self._dbusservice['/Ac/Power'] = meter_data.get('OutputPower', 0)
 
         for Phase in PhaseList:
           if len(PhaseList) == 1:
@@ -235,13 +254,24 @@ class DbusGrowattShineXService:
           mPow = '{}ThreePhaseGridOutputPower'.format(LPhase)
           mVol = '{}ThreePhaseGridVoltage'.format(LPhase)
 
-          if meter_data[mCur] <= 0.5:
-            meter_data[mCur] = (meter_data['OutputPower'] / len(PhaseList))/meter_data[mVol]
-            self._dbusservice[dbPow] = meter_data['TotalGenerateEnergy'] / len(PhaseList)
-          else:
-            self._dbusservice[dbPow] = meter_data[mPow] * cosphi
-          self._dbusservice[dbCur] = meter_data[mCur]
-          self._dbusservice[dbVol] = meter_data[mVol]
+          phase_voltage = meter_data.get(mVol, 0) or 230
+          phase_power = meter_data.get(mPow, 0) or 0
+          phase_current = meter_data.get(mCur, 0) or 0
+
+          if phase_power <= 0 and meter_data.get('OutputPower', 0) > 0:
+            phase_power = meter_data['OutputPower'] / len(PhaseList)
+          if phase_current <= 0.5:
+            phase_current = phase_power / phase_voltage if phase_voltage else 0
+          self._dbusservice[dbPow] = phase_power * cosphi
+          self._dbusservice[dbCur] = phase_current
+          self._dbusservice[dbVol] = phase_voltage
+      else:
+        # OutputPower <= 0 -> set all powers to 0 but keep latest voltages
+        self._dbusservice['/Ac/Power'] = 0
+        for Phase in allPhase:
+          self._dbusservice[f'/Ac/{Phase}/Current'] = 0
+          self._dbusservice[f'/Ac/{Phase}/Power'] = 0
+          self._dbusservice[f'/Ac/{Phase}/Voltage'] = meter_data.get(f'{Phase}ThreePhaseGridVoltage', 0)
 
       #logging
       logging.info("House Consumption (/Ac/Power): %s" % (self._dbusservice['/Ac/Power']))
