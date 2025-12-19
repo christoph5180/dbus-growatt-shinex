@@ -124,25 +124,25 @@ class DbusGrowattShineXService:
     retry_delay = 10  # Sekunden zwischen Versuchen
 
     for attempt in range(max_retries):
-        try:
-      meter_r = requests.get(url=URL, timeout=10, headers=headers)
-      if meter_r.status_code == 200:
-        if meter_r.headers.get('Content-Type').startswith('text/html'):
-          REBOOT_URL = URL.replace('/status', '/restart')
-          requests.get(url=REBOOT_URL, timeout=10)
-                    logging.info("Wechselrichter neugestartet – warte 30 Sekunden...")
-                    time.sleep(30)
-                    continue  # Versuche erneut
-                try:
-                    return meter_r.json()
-                except ValueError:
-                    logging.error(f"Ungültige JSON-Antwort (Versuch {attempt + 1}/{max_retries})")
-            else:
-                logging.error(f"HTTP-Fehler {meter_r.status_code} (Versuch {attempt + 1}/{max_retries})")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Verbindungsfehler: {e} (Versuch {attempt + 1}/{max_retries})")
+      try:
+        meter_r = requests.get(url=URL, timeout=10, headers=headers)
+        if meter_r.status_code == 200:
+          if meter_r.headers.get('Content-Type').startswith('text/html'):
+            REBOOT_URL = URL.replace('/status', '/restart')
+            requests.get(url=REBOOT_URL, timeout=10)
+            logging.info("Wechselrichter neugestartet – warte 30 Sekunden...")
+            time.sleep(30)
+            continue  # Versuche erneut
+          try:
+            return meter_r.json()
+          except ValueError:
+            logging.error(f"Ungültige JSON-Antwort (Versuch {attempt + 1}/{max_retries})")
+        else:
+          logging.error(f"HTTP-Fehler {meter_r.status_code} (Versuch {attempt + 1}/{max_retries})")
+      except requests.exceptions.RequestException as e:
+        logging.error(f"Verbindungsfehler: {e} (Versuch {attempt + 1}/{max_retries})")
 
-        time.sleep(retry_delay)
+      time.sleep(retry_delay)
 
     # Nach 3 Fehlversuchen: Skript neu starten
     logging.critical("3 fehlgeschlagene Versuche – melde Wechselrichter als offline")
